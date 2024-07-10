@@ -16,7 +16,7 @@ Classes:
         Methods:
             sample() - all parameters; description
 
-            test() - no parameters; tests the output channels and data logger, resets Power Source to DEFAULT SETTINGS
+            test() - no parameters; tests the output channels and data logger, resets Power Source to DEFAULT SETTINGS, briefly turns all output channels on
             turnOn() - reference to power source, channel number; turns on the specified channel
             turnOff() - reference to power source, channel number; turns off the specified channel
             turnAllOn() - reference to power source; turns all channels on
@@ -35,6 +35,7 @@ Classes:
             disableDlogCurrent() - reference to power source, channel number; disables the current for the specified channel on the data logger
             setDlogTime() - reference to power source, time in seconds; sets the duration of time for data logger to record
             writeCommand() - reference to power source, command; queries the power source with the specified command
+            changeOperationMode() - reference to power source, mode of operation; changes the operation mode of channel 3 to the specified mode
 
     GUI_E36312A: Creates the GUI for the power source
         Constructor:
@@ -64,7 +65,10 @@ Classes:
             selectBucket() - reference to bucket label; updates the selected bucket, updates bucket label
             createBucket() - reference to bucket entry box; creates new InfluxDB bucket, refreshes bucket list
             syncPowerSupply() - reference to power source, reference to on/off button, reference to channel number, reference to voltage label, reference to current label; syncs the status of each channel on the GUI with the power source
-
+            syncOutputChannel() - reference to power source, reference to the channel 3 widget, reference to the timer updating the status of channel 3; Synchronizes channel 3 with operation mode (independent, series, parallel), resets timers used to update channel status to avoid runtime errors
+            syncOutputChannel2() - reference to power source, reference to the channel 3 widget; same as above but for when channel 3 is in series or in parallel, without reference to timer because it does not exist
+            addChannel3Status() - no parameters; creates interface for changing output mode of channel 3 (Independent, Series, Parallel)
+            
     Note: Code that displays the output voltage and current is disabled because it causes significant lag when running.
     Note: It is recommended that the power source be fully configured before user starts recording data as it causes significant lag.
 """
@@ -73,7 +77,7 @@ Classes:
 # PyVisa imports
 from pyvisa.errors import VisaIOError
 from datetime import datetime
-from statistics import mean 
+from statistics import mean
 
 #Influx imports
 import os
@@ -134,32 +138,42 @@ class E36312A_Controls:
         else:
             DPS.write(f"OUTP 0, (@{ch})")
 
-    def turnAllOn(self, DPS):
-        chlist=[1,2,3]
+    def turnAllOn(self, DPS, chlist):
         for ch in chlist:
             DPS.write(f"OUTP 1, (@{ch})")
 
-    def turnAllOff(self, DPS):
-        chlist=[1,2,3]
+    def turnAllOff(self, DPS, chlist):
         for ch in chlist:
             DPS.write(f"OUTP 0, (@{ch})")
 
-    def findVoltageRange(self, DPS, ch):
+    def findVoltageRange(self, DPS, ch, paired):
+        maximum = 0
         if (ch == 1):  
             maximum = min(float(DPS.query(f"VOLT:PROT? (@{ch})")), 6.18)
-        else:
-            maximum = min(float(DPS.query(f"VOLT:PROT? (@{ch})")), 25.75)
+        elif (ch == 2):
+            if (paired == "OFF\n"):
+                maximum = min(float(DPS.query(f"VOLT:PROT? (@{ch})")), 25.75)
+            elif (paired == "SER\n"):
+                maximum = min(float(DPS.query(f"VOLT:PROT? (@{ch})")), 50)
+            elif (paired == "PAR\n"):
+                maximum = min(float(DPS.query(f"VOLT:PROT? (@{ch})")), 25)
+        elif (ch == 3):
+            if (paired == "OFF\n"):
+                maximum = min(float(DPS.query(f"VOLT:PROT? (@{ch})")), 25.75)
         return 0, maximum
 
-    def findCurrentRange(self, DPS, ch):
-        if (ch == 1):  
+    def findCurrentRange(self, ch, paired):
+        if (ch == 1):
             maximum = 5.15
         else:
-            maximum = 1.03
+            if (paired == "PAR\n"):
+                maximum = 2.06
+            else:
+                maximum = 1.03
         return 0.001, maximum
     
-    def setVoltage(self, DPS, ch, voltage):
-        range = self.findVoltageRange(DPS, ch)
+    def setVoltage(self, DPS, ch, voltage, paired):
+        range = self.findVoltageRange(DPS, ch, paired)
         chlist=[1,2,3]
         if int(ch) not in chlist:
             print("Invalid Channel")
@@ -261,9 +275,13 @@ class E36312A_Controls:
         except VisaIOError:
             return "Invalid Command"
         
+    def changeOperationMode(self, DPS, mode):
+        DPS.write(f"OUTP:PAIR {mode}")
+        
 
 class GUI_E36312A(QMainWindow):
     def __init__(self, DPS, parent=None): 
+        global channels
         global x
         global allButtons
         global upload_timer
@@ -279,6 +297,8 @@ class GUI_E36312A(QMainWindow):
         global control_layout
         global recording_layout
         global channel_layout
+        global paired
+        global channel_timer
 
         load_dotenv()
         token = os.getenv('TOKEN')
@@ -289,7 +309,7 @@ class GUI_E36312A(QMainWindow):
         # Initialize BucketsApi with the client
         buckets_api = BucketsApi(self.client)
 
-        frequency = 1.0
+        frequency = 2.0
         selectedBucket = "None"
         bucketList = buckets_api.find_buckets().buckets
         bucketNames = []
@@ -298,14 +318,19 @@ class GUI_E36312A(QMainWindow):
         x = E36312A_Controls()
         super().__init__(parent)
         self.DPS = DPS
-        # DPS = init() # Initiates device
-        init_test = x.test(DPS) # Tests device
-        if init_test:
-            pass
-        else:
-            print("Error in initiation or test")
-        self.setWindowTitle("E36312A GUI")
+        #This commented code runs a test on the device. The test resets the device.
+        # init_test = x.test(DPS) # Tests device
+        # if init_test:
+        #     pass
+        # else:
+        #     print("Error in initiation or test")
 
+        channels = [1, 2, 3]
+        paired = DPS.query("OUTP:PAIR?")
+        if (paired != "OFF\n"):
+            channels = [1, 2]
+
+        self.setWindowTitle("E36312A GUI")
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
 
@@ -319,12 +344,15 @@ class GUI_E36312A(QMainWindow):
         self.outputLabel = QLabel("Output Channels")
         control_layout.addWidget(self.outputLabel)
 
-        # Create a channel for demonstration
+        channel_timer = QTimer(control_layout)
+
         self.createChannel(1)
         self.createChannel(2)
         self.createChannel(3)
 
         control_layout.addLayout(channel_layout)
+
+        self.addChannel3Status()
 
         self.allOnButton = QPushButton("Turn All On", clicked=lambda: self.toggleAllChannelsOn())
         control_layout.addWidget(self.allOnButton)
@@ -341,7 +369,6 @@ class GUI_E36312A(QMainWindow):
         self.createNotesBox()
         self.importTextFile()
         self.notes_edit.textChanged.connect(self.saveNotes)
-
         control_layout.addLayout(terminal_layout)
 
         self.recordLabel = QLabel("Record to InfluxDB and Grafana")
@@ -358,9 +385,8 @@ class GUI_E36312A(QMainWindow):
         
         self.addRecording(self.bucketLabel, self.isRecording)
 
-
         main_layout.addLayout(control_layout)
-        main_layout.addLayout(recording_layout)        
+        main_layout.addLayout(recording_layout)     
 
         upload_timer = QTimer(self)
         upload_timer.timeout.connect(lambda: self.record(self.DPS))
@@ -368,89 +394,120 @@ class GUI_E36312A(QMainWindow):
 
     
     def createChannel(self, ch):
-        global allButtons
-        #x = E36312A()
-        self.layoutC = QVBoxLayout()
-        channel_label = QLabel(f"Channel {ch}")
-        self.layoutC.addWidget(channel_label)
-
-        setVoltageLabel = QLabel("Voltage: 0.000V")
-        self.layoutC.addWidget(setVoltageLabel)
-
-        if (ch == 1):
-            setCurrentLimitLabel = QLabel("Current: 5.000A")
-        else:
-            setCurrentLimitLabel = QLabel("Current: 1.000A")
-        self.layoutC.addWidget(setCurrentLimitLabel)
-
-        button = QPushButton("OFF", clicked=lambda: self.toggleButton(ch, button))
-        button.setStyleSheet("background-color: red")
-        self.layoutC.addWidget(button)
-
-        allButtons.append(button)
-
-        voltage_range = x.findVoltageRange(self.DPS, ch)
-        voltage_label = QLabel("Set Voltage")
-        self.layoutC.addWidget(voltage_label)
-
-        voltage_entry = QLineEdit()
-        hint_voltage = f"{voltage_range[0]}V - {voltage_range[1]}V"
-        voltage_entry.setPlaceholderText(hint_voltage)
-        voltage_entry.setStyleSheet("color: black")
-        voltage_entry.setStyleSheet("background-color: white")
-        voltage_entry.installEventFilter(self)  # To handle placeholder text behavior
-        self.layoutC.addWidget(voltage_entry)
-
-        voltage_button = QPushButton("Set Voltage", clicked=lambda: self.readVoltageEntry(ch, voltage_entry))
-        voltage_button.setStyleSheet("background-color: white")
-        self.layoutC.addWidget(voltage_button)
-
-        current_range = x.findCurrentRange(self.DPS, ch)
-        current_label = QLabel("Set Current Limit")
-        self.layoutC.addWidget(current_label)
-
-        current_entry = QLineEdit()
-        hint_current = f"{current_range[0]}A - {current_range[1]}A"
-        current_entry.setPlaceholderText(hint_current)
-        current_entry.setStyleSheet("color: black")
-        current_entry.setStyleSheet("background-color: white")
-        current_entry.installEventFilter(self)  # To handle placeholder text behavior
-        self.layoutC.addWidget(current_entry)
-
-        current_button = QPushButton("Set Current Limit", clicked=lambda: self.readCurrentEntry(ch, current_entry))
-        current_button.setStyleSheet("background-color: white")
-
-        self.layoutC.addWidget(current_button)
-
-        # To display and update voltage and current readings:
-        display_voltage = QLabel()
-        self.layoutC.addWidget(display_voltage)
-
-        display_current = QLabel()
-        self.layoutC.addWidget(display_current)
-
-        # update_timer = QTimer(self)
-        # update_timer.timeout.connect(lambda: self.updateVoltageCurrent(ch, display_voltage, display_current))
-        # update_timer.start(1000)
-
-        self.widget = QWidget()
-        self.widget.setLayout(self.layoutC)
-        if (ch == 1):
-            self.widget.setStyleSheet("background-color: rgba(255, 255, 0, 64);")
-        if (ch == 2):
-            self.widget.setStyleSheet("background-color: rgba(0, 128, 0, 64);")
-        if (ch == 3):
+        global channel_timer
+        if (paired != "OFF\n" and ch == 3):
+            self.layoutC = QVBoxLayout()
+            channel_label = QLabel(f"Channel {ch}")
+            self.layoutC.addWidget(channel_label)
+            self.stat = ""
+            if (paired == "SER\n"):
+                self.stat = "In Series with Channel 2"
+            elif (paired == "PAR\n"):
+                self.stat = "In Parallel with Channel 2"
+            self.status_label = QLabel(self.stat)
+            self.layoutC.addWidget(self.status_label)
+            self.widget = QWidget()
+            self.widget.setLayout(self.layoutC)
             self.widget.setStyleSheet("background-color: rgba(0, 0, 255, 64);")
+            channel_layout.addWidget(self.widget)
+
+            if channel_timer.isActive():
+                channel_timer.stop()
+                del channel_timer
+
+            channel_timer = QTimer(control_layout)
+            channel_timer.timeout.connect(lambda: self.syncOutputChannel2(self.DPS, self.widget))
+            channel_timer.start(1000)
+
+        else:
+            global allButtons
+            self.layoutC = QVBoxLayout()
+            channel_label = QLabel(f"Channel {ch}")
+            self.layoutC.addWidget(channel_label)
+
+            setVoltageLabel = QLabel("Voltage: 0.000V")
+            self.layoutC.addWidget(setVoltageLabel)
+
+            if (ch == 1):
+                setCurrentLimitLabel = QLabel("Current: 5.000A")
+            else:
+                setCurrentLimitLabel = QLabel("Current: 1.000A")
+            self.layoutC.addWidget(setCurrentLimitLabel)
+            button = QPushButton("OFF", clicked=lambda: self.toggleButton(ch, button))
+            button.setStyleSheet("background-color: red")
+            self.layoutC.addWidget(button)
+
+            allButtons.append(button)
+            voltage_range = x.findVoltageRange(self.DPS, ch, paired)
+            voltage_label = QLabel("Set Voltage")
+            self.layoutC.addWidget(voltage_label)
+
+            voltage_entry = QLineEdit()
+            hint_voltage = f"{voltage_range[0]}V - {voltage_range[1]}V"
+            voltage_entry.setPlaceholderText(hint_voltage)
+            voltage_entry.setStyleSheet("color: black")
+            voltage_entry.setStyleSheet("background-color: white")
+            voltage_entry.installEventFilter(self)  # To handle placeholder text behavior
+            self.layoutC.addWidget(voltage_entry)
+
+            voltage_button = QPushButton("Set Voltage", clicked=lambda: self.readVoltageEntry(ch, voltage_entry))
+            voltage_button.setStyleSheet("background-color: white")
+            self.layoutC.addWidget(voltage_button)
+
+            current_range = x.findCurrentRange(ch, paired)
+            current_label = QLabel("Set Current Limit")
+            self.layoutC.addWidget(current_label)
+
+            current_entry = QLineEdit()
+            hint_current = f"{current_range[0]}A - {current_range[1]}A"
+            current_entry.setPlaceholderText(hint_current)
+            current_entry.setStyleSheet("color: black")
+            current_entry.setStyleSheet("background-color: white")
+            current_entry.installEventFilter(self)  # To handle placeholder text behavior
+            self.layoutC.addWidget(current_entry)
+
+            current_button = QPushButton("Set Current Limit", clicked=lambda: self.readCurrentEntry(ch, current_entry))
+            current_button.setStyleSheet("background-color: white")
+
+            self.layoutC.addWidget(current_button)
+
+            # To display and update voltage and current readings:
+            display_voltage = QLabel()
+            self.layoutC.addWidget(display_voltage)
+
+            display_current = QLabel()
+            self.layoutC.addWidget(display_current)
+
+            #This code displays the actual outputs of each channel; disabled because it causes significant lag
+            # update_timer = QTimer(self)
+            # update_timer.timeout.connect(lambda: self.updateVoltageCurrent(ch, display_voltage, display_current))
+            # update_timer.start(1000)
+
+            self.widget = QWidget()
+            self.widget.setLayout(self.layoutC)
+            if (ch == 1):
+                self.widget.setStyleSheet("background-color: rgba(255, 255, 0, 64);")
+            if (ch == 2):
+                self.widget.setStyleSheet("background-color: rgba(0, 128, 0, 64);")
+            if (ch == 3):
+                self.widget.setStyleSheet("background-color: rgba(0, 0, 255, 64);")
 
 
-        channel_layout.addWidget(self.widget)
+            channel_layout.addWidget(self.widget)
 
-        update_timer = QTimer(control_layout)
-        update_timer.timeout.connect(lambda: self.syncPowerSupply(self.DPS, button, ch, setVoltageLabel, setCurrentLimitLabel))
-        update_timer.start(1000)
+            update_timer = QTimer(control_layout)
+            update_timer.timeout.connect(lambda: self.syncPowerSupply(self.DPS, button, ch, setVoltageLabel, setCurrentLimitLabel))
+            update_timer.start(1000)
+
+            if channel_timer.isActive():
+                channel_timer.stop()
+                del channel_timer
+            
+            channel_timer = QTimer(control_layout)
+            channel_timer.timeout.connect(lambda: self.syncOutputChannel(self.DPS, self.widget, update_timer))
+            channel_timer.start(1000)
 
     def toggleButton(self, ch, button):
-        #x = E36312A()
         if button.text() == 'OFF':
             x.turnOn(self.DPS, ch)
             button.setText('ON')
@@ -462,19 +519,19 @@ class GUI_E36312A(QMainWindow):
 
     def toggleAllChannelsOn(self):
         global x
-        x.turnAllOn(self.DPS)
-        for i in range(3):  # Assuming you have 3 channels
-            allButtons[i].setText("ON")
-            allButtons[i].setStyleSheet("background-color: green")
+
+        x.turnAllOn(self.DPS, channels)
+        for i in channels:  # Assuming you have 3 channels
+            allButtons[i - 1].setText("ON")
+            allButtons[i - 1].setStyleSheet("background-color: green")
 
     def toggleAllChannelsOff(self):
-        x.turnAllOff(self.DPS)
-        for i in range(3):  # Assuming you have 3 channels
-            allButtons[i].setText("OFF")
-            allButtons[i].setStyleSheet("background-color: red")
+        x.turnAllOff(self.DPS, channels)
+        for i in channels:  # Assuming you have 3 channels
+            allButtons[i - 1].setText("OFF")
+            allButtons[i - 1].setStyleSheet("background-color: red")
             
     def readVoltageEntry(self, ch, voltage_entry):
-        #x = E36312A()
         text = voltage_entry.text()
         voltage_entry.clear()
         if text == "" or text.startswith("Set Voltage"):
@@ -482,14 +539,13 @@ class GUI_E36312A(QMainWindow):
             return
         try:
             voltage = float(text)
-            result = x.setVoltage(self.DPS, ch, voltage)
+            result = x.setVoltage(self.DPS, ch, voltage, paired)
             if result == -2:
                 QMessageBox.warning(self, "Warning", "Voltage Entered Out Of Range", QMessageBox.Ok)
         except ValueError:
             pass
 
     def readCurrentEntry(self, ch, current_entry):
-        #x = E36312A()
         text = current_entry.text()
         current_entry.clear()
         if text == "" or text.startswith("Set Current Limit"):
@@ -504,7 +560,6 @@ class GUI_E36312A(QMainWindow):
             pass
 
     def updateVoltageCurrent(self, ch, display_voltage, display_current):
-        #x = E36312A()
         voltage = float(x.getVoltage(self.DPS, ch))
         display_voltage.setText(f"{voltage} V")
 
@@ -586,21 +641,23 @@ class GUI_E36312A(QMainWindow):
         upload_timer.stop()
         label.setText("Status: Recording Stopped")
 
-    def setRecordingDelay(self, time, label, textbox): #when updating delay, the first measurement using the new delay always is 1 second longer, then it goes back to the correct set delay (not sure why)
+    def setRecordingDelay(self, time, label, textbox):
         global frequency
         try:
             frequency = float(time)
             label.setText(f"Frequency of Measurements: {frequency}s")
             textbox.clear()
-
+            if (frequency < 2):
+                QMessageBox.warning(self, "Warning", "Frequency under 2 seconds may result in inconsistent measurements due to execution time of the code", QMessageBox.Ok)
             if upload_timer.isActive():
                 upload_timer.stop()
-                upload_timer.start(frequency * 1000)
+                upload_timer.start(int(frequency * 1000))
             else:
                 upload_timer.stop()
-        except:
-            pass
-        
+        except ValueError as e:
+            QMessageBox.warning(self, "Error", "Invalid frequency value", QMessageBox.Ok)
+
+            
     def record(self, DPS):
         IC = InfluxClient(token, org, selectedBucket)
         timestamp = int(datetime.now().timestamp())
@@ -609,8 +666,9 @@ class GUI_E36312A(QMainWindow):
             current1 = float(DPS.query("MEAS:CURR:DC? (@1)").strip())
             voltage2 = float(DPS.query("MEAS:VOLT:DC? (@2)").strip())
             current2 = float(DPS.query("MEAS:CURR:DC? (@2)").strip())
-            voltage3 = float(DPS.query("MEAS:VOLT:DC? (@3)").strip())
-            current3 = float(DPS.query("MEAS:CURR:DC? (@3)").strip())
+            if(paired == "OFF\n"):
+                voltage3 = float(DPS.query("MEAS:VOLT:DC? (@3)").strip())
+                current3 = float(DPS.query("MEAS:CURR:DC? (@3)").strip())
         except VisaIOError as e:
             QMessageBox.warning(self, "Warning", "Measurement Failed", QMessageBox.Ok)
     
@@ -619,19 +677,21 @@ class GUI_E36312A(QMainWindow):
         current_data1 = f"E36312A,Channel=1 current={current1} {timestamp}"
         voltage_data2 = f"E36312A,Channel=2 voltage={voltage2} {timestamp}"
         current_data2 = f"E36312A,Channel=2 current={current2} {timestamp}"
-        voltage_data3 = f"E36312A,Channel=3 voltage={voltage3} {timestamp}"
-        current_data3 = f"E36312A,Channel=3 current={current3} {timestamp}"
+        if(paired == "OFF\n"):
+            voltage_data3 = f"E36312A,Channel=3 voltage={voltage3} {timestamp}"
+            current_data3 = f"E36312A,Channel=3 current={current3} {timestamp}"
         
         # Write data to InfluxDB
-        if (DPS.query("OUTP:STAT? (@1)") == "1"):
+        if (int(DPS.query("OUTP:STAT? (@1)")) == 1):
             IC.write_data(voltage_data1, write_option=SYNCHRONOUS)
             IC.write_data(current_data1, write_option=SYNCHRONOUS)
-        if (DPS.query("OUTP:STAT? (@2)") == "1"):
+        if (int(DPS.query("OUTP:STAT? (@2)")) == 1):
             IC.write_data(voltage_data2, write_option=SYNCHRONOUS)
             IC.write_data(current_data2, write_option=SYNCHRONOUS)
-        if (DPS.query("OUTP:STAT? (@3)") == "1"):
-            IC.write_data(voltage_data3, write_option=SYNCHRONOUS)
-            IC.write_data(current_data3, write_option=SYNCHRONOUS)
+        if(paired == "OFF\n"):
+            if (int(DPS.query("OUTP:STAT? (@3)")) == 1):
+                IC.write_data(voltage_data3, write_option=SYNCHRONOUS)
+                IC.write_data(current_data3, write_option=SYNCHRONOUS)
 
     def addRecording(self, bucketLabel, recordingLabel):
         self.layoutR = QVBoxLayout()
@@ -703,7 +763,9 @@ class GUI_E36312A(QMainWindow):
             QMessageBox.warning(self, "Warning", "Bucket Already Exists", QMessageBox.Ok)
 
     def syncPowerSupply(self, DPS, button, ch, voltageLabel, currentLimitLabel):
-        if (DPS.query(f"OUTP:STAT? (@{ch})") == "1"):
+        if (ch == 3 and paired != "OFF\n"):
+            return
+        if (int(DPS.query(f"OUTP:STAT? (@{ch})")) == 1):
             button.setText('ON')
             button.setStyleSheet("background-color: green")
         else:
@@ -714,3 +776,51 @@ class GUI_E36312A(QMainWindow):
         current = float(DPS.query(f"CURR? (@{ch})"))
         voltageLabel.setText(f'Voltage: {voltage} V')
         currentLimitLabel.setText(f'Current: {current} A')
+    
+    def syncOutputChannel(self, DPS, widget, update_timer):
+        global paired
+        global channels
+        self.status = DPS.query("OUTP:PAIR?")
+        if self.status != paired:
+            paired = self.status
+            if (paired == "OFF\n"):
+                channels = [1, 2, 3]
+            else:
+                channels = [1, 2]
+            update_timer.stop()
+            update_timer.timeout.disconnect()
+            del update_timer
+            channel_layout.removeWidget(widget)
+            widget.hide()
+            widget.deleteLater()
+            self.createChannel(3)
+
+    def syncOutputChannel2(self, DPS, widget):
+        global paired
+        global channels
+        self.status = DPS.query("OUTP:PAIR?")
+        if self.status != paired:
+            paired = self.status
+            if (paired == "OFF\n"):
+                channels = [1, 2, 3]
+            else:
+                channels = [1, 2]
+            channel_layout.removeWidget(widget)
+            widget.hide()
+            widget.deleteLater()
+            self.createChannel(3)
+
+    def addChannel3Status(self):
+        self.Ch3Label = QLabel("Set Channel 3 Status")
+        control_layout.addWidget(self.Ch3Label)
+
+        self.Ch3Layout = QHBoxLayout()
+        self.indButton = QPushButton("Independent", clicked=lambda: x.changeOperationMode(self.DPS, "OFF"))
+        self.seriesButton = QPushButton("Series", clicked=lambda: x.changeOperationMode(self.DPS, "SER"))
+        self.parallelButton = QPushButton("Parallel", clicked=lambda: x.changeOperationMode(self.DPS, "PAR"))
+
+        self.Ch3Layout.addWidget(self.indButton)
+        self.Ch3Layout.addWidget(self.seriesButton)
+        self.Ch3Layout.addWidget(self.parallelButton)
+
+        control_layout.addLayout(self.Ch3Layout)

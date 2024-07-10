@@ -10,6 +10,8 @@ Classes:
             org: set organization on Influx
             bucket: bucket to write data to in Influx
         Methods:
+            sample() - all parameters; description
+
             write_data() - data to write; writes data to InfluxDB based on the bucket in the constructor, logs successful and failed writes
 """
 

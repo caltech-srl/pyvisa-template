@@ -11,9 +11,12 @@ Classes:
         Constructor:
             no parameters
         Methods:
-            selectIndex() - no parameters; stores selected index and matches it to the device
+            sample() - all parameters; description
+
+            selectIndex() - no parameters; stores selected index and matches it to the device, terminates connection to all devices except for one selected (at least it should)
             wait() - no parameters; constantly passes to simulate waiting, used to solve issue of GUI immediately closing, waits until the user selects a device before closing
             fillSelection() - array of devices (either Pyvisa or Pyserial); connects to and displays the identification of every available device, Pyvisa and Pyserial are separate because of code differences during connection
+                              Note: Serial connections are scanned for using all connected COM ports and the 9 most common BAUD numbers
 """
 
 from PySide6.QtWidgets import QApplication, QPushButton, QVBoxLayout, QWidget, QMessageBox, QListWidget
@@ -92,11 +95,16 @@ class DeviceSelectionGUI:
             selected_index = selected_indices[0].row()
             if self.selected_type == "PyVisa":
                 self.selected_device = ["PyVisa", self.PyVisaIds[selected_index]]
+                # Close all PyVisa devices
+                for device in self.allDevices:
+                    device.close()
             if self.selected_type == "PySerial":
                 self.selected_device = ["PySerial", self.serialMap[selected_index][0], self.serialMap[selected_index][1]]
+                # No need to close PySerial devices as they are closed after identification
             self.main.close()
         else:
             QMessageBox.warning(self.main, "No Device Selected", "No Device Selected", QMessageBox.Ok)
+
 
     def wait(self):
         pass

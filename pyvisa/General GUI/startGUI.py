@@ -11,6 +11,8 @@ Dependencies:
 No Classes
 
 Methods:
+    sample() - all parameters; description
+
     GUI_start() - no parameters, creates the selection GUI, Pyvisa and Pyserial devices are separated and have designated buttons to display
 """
 
